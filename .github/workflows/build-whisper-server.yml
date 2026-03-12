@@ -1,0 +1,91 @@
+name: Build whisper-server binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: "Tag name for the release (e.g., v1.0.0)"
+        required: true
+        default: "v1.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+            cmake_flags: "-DCMAKE_OSX_ARCHITECTURES=arm64"
+            zip_name: whisper-server-darwin-arm64.zip
+            binary_name: whisper-server-darwin-arm64
+          - os: macos-latest
+            arch: x64
+            cmake_flags: "-DCMAKE_OSX_ARCHITECTURES=x86_64"
+            zip_name: whisper-server-darwin-x64.zip
+            binary_name: whisper-server-darwin-x64
+          - os: windows-latest
+            arch: x64
+            cmake_flags: ""
+            zip_name: whisper-server-win32-x64-cpu.zip
+            binary_name: whisper-server-win32-x64-cpu.exe
+          - os: ubuntu-latest
+            arch: x64
+            cmake_flags: ""
+            zip_name: whisper-server-linux-x64-cpu.zip
+            binary_name: whisper-server-linux-x64-cpu
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build whisper-server
+        run: |
+          cmake -B build ${{ matrix.cmake_flags }} -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_SERVER=ON
+          cmake --build build --config Release --target whisper-server -j $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+        shell: bash
+
+      - name: Package binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p package
+          cp build/bin/whisper-server package/${{ matrix.binary_name }}
+          chmod +x package/${{ matrix.binary_name }}
+          cd package && zip ../${{ matrix.zip_name }} ${{ matrix.binary_name }}
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p package
+          cp build/bin/Release/whisper-server.exe package/${{ matrix.binary_name }}
+          cd package && 7z a ../${{ matrix.zip_name }} ${{ matrix.binary_name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.zip_name }}
+          path: ${{ matrix.zip_name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.event.inputs.version_tag }} \
+            --repo ${{ github.repository }} \
+            --title "whisper-server ${{ github.event.inputs.version_tag }}" \
+            --notes "Pre-built whisper-server binaries for Wisperly" \
+            artifacts/**/*.zip
